@@ -80,6 +80,52 @@ class GPT(nn.Module):
         # vetor -> nota (logit) para cada palavra do vocabulário
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-model = GPT(GPTConfig())
-n_params = sum(p.numel() for p in model.parameters())
-print(f"modelo criado: {n_params:,} parâmetros")
+    @classmethod
+    def from_pretrained(cls, model_type):
+        """Carrega os pesos do GPT-2 treinado da Hugging Face"""
+        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+        from transformers import GPT2LMHeadModel
+        print("loading weights from pretrained gpt: %s" % model_type)
+
+        # n_layer, n_head e n_embd dependem do tamanho do modelo
+        config_args = {
+            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),  # 124M parâmetros
+            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024), # 350M parâmetros
+            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M parâmetros
+            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M parâmetros
+        }[model_type]
+        config_args['vocab_size'] = 50257  # sempre 50257 nos modelos GPT-2
+        config_args['block_size'] = 1024   # sempre 1024 nos modelos GPT-2
+
+        # cria o modelo feito do zero (pesos aleatórios)
+        config = GPTConfig(**config_args)
+        model = GPT(config)
+        sd = model.state_dict()
+        sd_keys = sd.keys()
+        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')]  # ignora a máscara (não é parâmetro)
+
+        # carrega o modelo da Hugging Face
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        sd_hf = model_hf.state_dict()
+
+        # copia os pesos conferindo nomes e formatos
+        sd_keys_hf = sd_hf.keys()
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')]  # máscara, ignorar
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')]         # máscara, ignorar
+        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
+        # a OpenAI usou "Conv1D" nessas camadas; aqui é nn.Linear,
+        # então esses pesos precisam ser transpostos na cópia
+        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+        for k in sd_keys_hf:
+            if any(k.endswith(w) for w in transposed):
+                assert sd_hf[k].shape[::-1] == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k].t())
+            else:
+                assert sd_hf[k].shape == sd[k].shape
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k])
+        return model
+
+model = GPT.from_pretrained('gpt2')
+print("funcionou!")
