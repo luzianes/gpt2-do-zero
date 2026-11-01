@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
+import time
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -209,7 +210,8 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
+# train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
+train_loader = DataLoaderLite(B=2, T=1024)     # lotes de 16 sequências de 1024 tokens
 
 # calcula os logits e a loss
 model = GPT(GPTConfig())
@@ -218,13 +220,17 @@ model.to(device)
 # otimiza!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
 for i in range(50):
+    t0 = time.time()                    # marca o início do passo
     x, y = train_loader.next_batch()    # pega o próximo lote do texto
     x, y = x.to(device), y.to(device)   # envia o lote para a GPU
     optimizer.zero_grad()               # zera os gradientes do passo anterior
     logits, loss = model(x, y)          # calcula a previsão e o erro (loss)
     loss.backward()                     # calcula os gradientes (backpropagation)
     optimizer.step()                    # atualiza os pesos
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize()            # espera a GPU terminar o trabalho
+    t1 = time.time()                    # marca o fim do passo
+    dt = (t1 - t0) * 1000               # diferença de tempo em milissegundos
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms")
 
 import sys; sys.exit(0)             
 
