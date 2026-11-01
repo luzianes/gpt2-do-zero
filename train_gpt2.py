@@ -11,6 +11,7 @@ class CausalSelfAttention(nn.Module):
         assert config.n_embd % config.n_head == 0
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)  # Q, K, V juntos
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)      # projeção de saída
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         # máscara triangular: posição t só enxerga posições <= t
@@ -41,7 +42,8 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
-
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+    
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
@@ -83,6 +85,21 @@ class GPT(nn.Module):
 
         # compartilhamento de pesos: a entrada (wte) e a saída (lm_head) usam a mesma matriz
         self.transformer.wte.weight = self.lm_head.weight
+
+        # inicializa os parâmetros
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                # camadas marcadas (c_proj): desvio menor
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         # idx tem formato (B, T): lote de sequências de índices de tokens
@@ -186,6 +203,11 @@ class DataLoaderLite:
 # detecta automaticamente o dispositivo: usa a GPU (cuda) se existir, senão a cpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"usando o dispositivo: {device}")
+
+# fixa a semente aleatória (resultados repetíveis)
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 
