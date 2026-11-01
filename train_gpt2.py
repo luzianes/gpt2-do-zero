@@ -145,12 +145,16 @@ class GPT(nn.Module):
         return model
 
 # -----------------------------------------------------------------------------
+# detecta automaticamente o dispositivo: usa a GPU (cuda) se existir, senão a cpu
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"usando o dispositivo: {device}")
+
 num_return_sequences = 5   # quantas frases gerar
 max_length = 30            # tamanho máximo de cada frase (em tokens)
 
 model = GPT.from_pretrained('gpt2')
 model.eval()       # modo de uso (não de treino)
-model.to('cpu')   # 'cuda': envia o modelo para a GPU; 'cpu': usa cpu como alternativa
+model.to(device)   # envia o modelo para a GPU (cuda) ou deixa na cpu
 
 # tokens do início da frase (prefixo)
 import tiktoken
@@ -158,7 +162,7 @@ enc = tiktoken.get_encoding('gpt2')                       # tokenizador do GPT-2
 tokens = enc.encode("Hello, I'm a language model,")       # texto -> lista de 8 números
 tokens = torch.tensor(tokens, dtype=torch.long)           # (8,)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # (5, 8): a mesma frase 5 vezes
-x = tokens.to('cpu')
+x = tokens.to(device)
 
 # geração de texto. neste momento x tem formato (B, T), com B = 5 e T = 8
 # fixa a semente aleatória em 42 (resultados repetíveis)
