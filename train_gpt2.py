@@ -81,6 +81,9 @@ class GPT(nn.Module):
         # vetor -> nota (logit) para cada palavra do vocabulário
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+        # compartilhamento de pesos: a entrada (wte) e a saída (lm_head) usam a mesma matriz
+        self.transformer.wte.weight = self.lm_head.weight
+
     def forward(self, idx, targets=None):
         # idx tem formato (B, T): lote de sequências de índices de tokens
         B, T = idx.size()
