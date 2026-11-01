@@ -152,9 +152,10 @@ print(f"usando o dispositivo: {device}")
 num_return_sequences = 5   # quantas frases gerar
 max_length = 30            # tamanho máximo de cada frase (em tokens)
 
-model = GPT.from_pretrained('gpt2')
-model.eval()       # modo de uso (não de treino)
-model.to(device)   # envia o modelo para a GPU (cuda) ou deixa na cpu
+# model = GPT.from_pretrained('gpt2')   # pesos treinados da OpenAI (desativado)
+model = GPT(GPTConfig())                # modelo do zero, com pesos aleatórios
+model.eval()                            # modo de uso (não de treino)
+model.to(device)                        # envia o modelo para a GPU (cuda) ou deixa na cpu
 
 # tokens do início da frase (prefixo)
 import tiktoken
