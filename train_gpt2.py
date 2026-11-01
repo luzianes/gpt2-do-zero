@@ -4,14 +4,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-@dataclass
-class GPTConfig:
-    block_size: int = 1024   # tamanho máximo do contexto (nº de tokens)
-    vocab_size: int = 50257  # nº de tokens do vocabulário
-    n_layer: int = 12        # nº de blocos Transformer
-    n_head: int = 12         # nº de cabeças de atenção
-    n_embd: int = 768        # tamanho do vetor de cada token
-
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -67,6 +59,13 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))  # tokens trocam informação entre si
         x = x + self.mlp(self.ln_2(x))   # cada token é processado sozinho
         return x
+@dataclass
+class GPTConfig:
+    block_size: int = 1024   # tamanho máximo do contexto (nº de tokens)
+    vocab_size: int = 50257  # nº de tokens do vocabulário
+    n_layer: int = 12        # nº de blocos Transformer
+    n_head: int = 12         # nº de cabeças de atenção
+    n_embd: int = 768        # tamanho do vetor de cada token
 
 class GPT(nn.Module):
     def __init__(self, config):
