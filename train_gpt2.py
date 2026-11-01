@@ -80,6 +80,23 @@ class GPT(nn.Module):
         # vetor -> nota (logit) para cada palavra do vocabulário
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+    def forward(self, idx):
+        # idx tem formato (B, T): lote de sequências de índices de tokens
+        B, T = idx.size()
+        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
+        # embeddings de posição e de token
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)  # formato (T)
+        pos_emb = self.transformer.wpe(pos)  # embeddings de posição, formato (T, n_embd)
+        tok_emb = self.transformer.wte(idx)  # embeddings de token, formato (B, T, n_embd)
+        x = tok_emb + pos_emb                # soma: cada token sabe "o quê" e "onde"
+        # passa pelos blocos Transformer
+        for block in self.transformer.h:
+            x = block(x)
+        # LayerNorm final e camada de saída
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)  # formato (B, T, vocab_size)
+        return logits  
+
     @classmethod
     def from_pretrained(cls, model_type):
         """Carrega os pesos do GPT-2 treinado da Hugging Face"""
@@ -127,5 +144,46 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
         return model
 
+# -----------------------------------------------------------------------------
+num_return_sequences = 5   # quantas frases gerar
+max_length = 30            # tamanho máximo de cada frase (em tokens)
+
 model = GPT.from_pretrained('gpt2')
-print("funcionou!")
+model.eval()       # modo de uso (não de treino)
+model.to('cpu')   # 'cuda': envia o modelo para a GPU; 'cpu': usa cpu como alternativa
+
+# tokens do início da frase (prefixo)
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')                       # tokenizador do GPT-2
+tokens = enc.encode("Hello, I'm a language model,")       # texto -> lista de 8 números
+tokens = torch.tensor(tokens, dtype=torch.long)           # (8,)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # (5, 8): a mesma frase 5 vezes
+x = tokens.to('cpu')
+
+# geração de texto. neste momento x tem formato (B, T), com B = 5 e T = 8
+# fixa a semente aleatória em 42 (resultados repetíveis)
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+while x.size(1) < max_length:
+    # passa x pelo modelo para obter os logits
+    with torch.no_grad():
+        logits = model(x)  # (B, T, vocab_size)
+        # pega só os logits da última posição
+        logits = logits[:, -1, :]  # (B, vocab_size)
+        # transforma em probabilidades
+        probs = F.softmax(logits, dim=-1)
+        # amostragem top-k com k = 50 (padrão do pipeline da Hugging Face)
+        # topk_probs fica (5, 50), topk_indices fica (5, 50)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+        # sorteia um token entre os 50 mais prováveis
+        ix = torch.multinomial(topk_probs, 1)  # (B, 1)
+        # pega o índice real do token sorteado
+        xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
+        # acrescenta o token no fim da sequência
+        x = torch.cat((x, xcol), dim=1)
+
+# imprime o texto gerado
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()   # tokens da frase i
+    decoded = enc.decode(tokens)          # números -> texto
+    print(">", decoded)
