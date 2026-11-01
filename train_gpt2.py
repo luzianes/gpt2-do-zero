@@ -80,7 +80,7 @@ class GPT(nn.Module):
         # vetor -> nota (logit) para cada palavra do vocabulário
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         # idx tem formato (B, T): lote de sequências de índices de tokens
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
@@ -95,8 +95,13 @@ class GPT(nn.Module):
         # LayerNorm final e camada de saída
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # formato (B, T, vocab_size)
-        return logits  
-
+        loss= None
+        if targets is not None:
+            # cross-entropy: compara as notas de cada posição com o token correto
+            # (B, T, vocab_size) -> (B*T, vocab_size)   e   (B, T) -> (B*T)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss 
+    
     @classmethod
     def from_pretrained(cls, model_type):
         """Carrega os pesos do GPT-2 treinado da Hugging Face"""
@@ -158,15 +163,23 @@ text = text[:1000]                  # só os primeiros 1000 caracteres
 tokens = enc.encode(text)
 B, T = 4, 32                        # 4 sequências de 32 tokens
 buf = torch.tensor(tokens[:B*T + 1])
+buf = buf.to(device)
 x = buf[:-1].view(B, T)             # entradas
 y = buf[1:].view(B, T)              # respostas esperadas (próximo token)
 
-# calcula os logits
+# calcula os logits e a loss
 model = GPT(GPTConfig())
 model.to(device)
-logits = model(x.to(device))
 
-print(logits.shape)
+# otimiza!
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
+for i in range(50):
+    optimizer.zero_grad()           # zera os gradientes do passo anterior
+    logits, loss = model(x, y)      # calcula a previsão e o erro (loss)
+    loss.backward()                 # calcula os gradientes (backpropagation)
+    optimizer.step()                # atualiza os pesos
+    print(f"step {i}, loss: {loss.item()}")
+
 import sys; sys.exit(0)             
 
 # prefix tokens
