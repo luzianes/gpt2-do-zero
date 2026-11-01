@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import tiktoken
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -149,23 +150,41 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
         return model
 
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+
+        # ao iniciar, lê os tokens do disco e guarda na memória
+        with open('input.txt', 'r') as f:
+            text = f.read()
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+
+        # estado: posição atual no texto
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position : self.current_position+B*T+1]
+        x = (buf[:-1]).view(B, T)  # entradas
+        y = (buf[1:]).view(B, T)   # respostas esperadas
+        # avança a posição no texto
+        self.current_position += B * T
+        # se o próximo lote passar do fim do texto, volta ao começo
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+        return x, y
+
 # -----------------------------------------------------------------------------
 # detecta automaticamente o dispositivo: usa a GPU (cuda) se existir, senão a cpu
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"usando o dispositivo: {device}")
 
-# pega um lote de dados
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-with open('input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]                  # só os primeiros 1000 caracteres
-tokens = enc.encode(text)
-B, T = 4, 32                        # 4 sequências de 32 tokens
-buf = torch.tensor(tokens[:B*T + 1])
-buf = buf.to(device)
-x = buf[:-1].view(B, T)             # entradas
-y = buf[1:].view(B, T)              # respostas esperadas (próximo token)
+train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 
 # calcula os logits e a loss
 model = GPT(GPTConfig())
@@ -174,10 +193,12 @@ model.to(device)
 # otimiza!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
 for i in range(50):
-    optimizer.zero_grad()           # zera os gradientes do passo anterior
-    logits, loss = model(x, y)      # calcula a previsão e o erro (loss)
-    loss.backward()                 # calcula os gradientes (backpropagation)
-    optimizer.step()                # atualiza os pesos
+    x, y = train_loader.next_batch()    # pega o próximo lote do texto
+    x, y = x.to(device), y.to(device)   # envia o lote para a GPU
+    optimizer.zero_grad()               # zera os gradientes do passo anterior
+    logits, loss = model(x, y)          # calcula a previsão e o erro (loss)
+    loss.backward()                     # calcula os gradientes (backpropagation)
+    optimizer.step()                    # atualiza os pesos
     print(f"step {i}, loss: {loss.item()}")
 
 import sys; sys.exit(0)             
