@@ -149,13 +149,30 @@ class GPT(nn.Module):
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"usando o dispositivo: {device}")
 
+# pega um lote de dados
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]                  # só os primeiros 1000 caracteres
+tokens = enc.encode(text)
+B, T = 4, 32                        # 4 sequências de 32 tokens
+buf = torch.tensor(tokens[:B*T + 1])
+x = buf[:-1].view(B, T)             # entradas
+y = buf[1:].view(B, T)              # respostas esperadas (próximo token)
+
+# calcula os logits
+model = GPT(GPTConfig())
+model.to(device)
+logits = model(x.to(device))
+
+print(logits.shape)
+import sys; sys.exit(0)             
+
+# prefix tokens
+model.eval()                        # modo de uso (não de treino)
 num_return_sequences = 5   # quantas frases gerar
 max_length = 30            # tamanho máximo de cada frase (em tokens)
-
-# model = GPT.from_pretrained('gpt2')   # pesos treinados da OpenAI (desativado)
-model = GPT(GPTConfig())                # modelo do zero, com pesos aleatórios
-model.eval()                            # modo de uso (não de treino)
-model.to(device)                        # envia o modelo para a GPU (cuda) ou deixa na cpu
 
 # tokens do início da frase (prefixo)
 import tiktoken
