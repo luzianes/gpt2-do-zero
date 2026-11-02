@@ -27,11 +27,15 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        # notas de atenção: Q·Kᵀ / raiz(d)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v  # média ponderada dos valores
+        
+        # notas de atenção: Q·Kᵀ / raiz(d) -  atenção "manual" (cria a matriz (T, T) inteira para todas as queries e keys)
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v  # média ponderada dos valores
+        
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # flash attention
+        
         # junta as cabeças: volta para (B, T, C)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
@@ -212,8 +216,9 @@ if torch.cuda.is_available():
 
 # train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 # train_loader = DataLoaderLite(B=16, T=1024)  # lotes de 16 sequências de 1024 tokens
-train_loader = DataLoaderLite(B=2, T=1024)     # lotes de 2 sequências de 1024 tokens
-# train_loader = DataLoaderLite(B=4, T=1024)   # lotes de 4 sequências de 1024 tokens
+# train_loader = DataLoaderLite(B=2, T=1024)   # lotes de 2 sequências de 1024 tokens
+train_loader = DataLoaderLite(B=4, T=1024)     # lotes de 4 sequências de 1024 tokens
+# train_loader = DataLoaderLite(B=8, T=1024)   # lotes de 8 sequências de 1024 tokens
 
 # usa TF32 nas multiplicações de matrizes (mais rápido, com precisão um pouco menor)
 torch.set_float32_matmul_precision('high')
