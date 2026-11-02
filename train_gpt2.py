@@ -230,7 +230,8 @@ model.to(device)
 model = torch.compile(model)   # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
 
 # taxa de aprendizado variável: comneça pequena, sobe (aquecimento) e cai devagar (queda em cosseno)
-max_lr = 3e-4              # taxa de aprendizado máxima
+# max_lr = 3e-4              # taxa de aprendizado máxima
+max_lr = 6e-4              # taxa de aprendizado máxima
 min_lr = max_lr * 0.1      # taxa mínima: 10% da máxima
 warmup_steps = 10          # passos de aquecimento
 max_steps = 50             # total de passos
