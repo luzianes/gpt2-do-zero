@@ -1,0 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch
+tiktoken
+transformers
+numpy
+triton-windows; sys_platform == "win32"
