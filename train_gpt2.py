@@ -322,7 +322,7 @@ if ddp:
     ddp_world_size = int(os.environ['WORLD_SIZE'])   # total de processos (GPUs)
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
-    master_process = ddp_rank == 0  # este processo cuida de logs, checkpoints etc.
+    master_process = ddp_rank == 0                   # este processo cuida de logs, checkpoints etc.
 else:
     # execução normal, sem DDP (uma GPU só)
     ddp_rank = 0
@@ -380,15 +380,15 @@ torch.set_float32_matmul_precision('high')
 
 # cria o modelo
 # model = GPT(GPTConfig())
-model = GPT(GPTConfig(vocab_size=50304))   # vocabulário arredondado para um "nice number"
+model = GPT(GPTConfig(vocab_size=50304))    # vocabulário arredondado para um "nice number"
 model.to(device)
-# model = torch.compile(model)   # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
+# model = torch.compile(model)              # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
 
-use_hellaswag = False  # a fonte original do HellaSwag (github.com/rowanz/hellaswag) foi bloqueada por DMCA
+use_hellaswag = False                       # a fonte original do HellaSwag (github.com/rowanz/hellaswag) foi bloqueada por DMCA
 
-# use_compile = False  # torch.compile atrapalha a HellaSwag e a geração de texto (no código original: TODO fix)
+# use_compile = False                       # torch.compile atrapalha a HellaSwag e a geração de texto (no código original: TODO fix)
 
-use_compile = True  # otimizar, já que não está usando o HellaSwag
+use_compile = True                          # otimizar, já que não está usando o HellaSwag
 if use_compile:
     model = torch.compile(model)
 
@@ -403,8 +403,8 @@ min_lr = max_lr * 0.1       # taxa mínima: 10% da máxima
 warmup_steps = 10           # passos de aquecimento
 max_steps = 50              # total de passos
 
-# warmup_steps = 715          # passos de aquecimento
-# max_steps = 19073              # total de passos - ≈ 10 bilhões de tokens ÷ 524.288 por passo
+# warmup_steps = 715         # passos de aquecimento
+# max_steps = 19073          # total de passos - ≈ 10 bilhões de tokens ÷ 524.288 por passo
 
 # warmup_steps = 64          # passos de aquecimento - mesma proporção do vídeo (715 de 19073 ≈ 3,75%)
 # max_steps = 1716           # total de passos - ≈ 900 milhões de tokens ÷ 524.288 por passo
@@ -440,7 +440,7 @@ with open(log_file, "w") as f:  # abre para escrita, para limpar o arquivo
 # for i in range(50):
 for step in range(max_steps):
     t0 = time.time()                                                    # marca o início do passo
-    last_step = (step == max_steps - 1)   # True só no último passo
+    last_step = (step == max_steps - 1)                                 # True só no último passo
 
     # de tempos em tempos, avalia a loss de validação
     # if step % 100 == 0:
@@ -546,7 +546,7 @@ for step in range(max_steps):
     # laço de treino
     model.train()
     optimizer.zero_grad() 
-    loss_accum = 0.0                                              # zera os gradientes do passo anterior
+    loss_accum = 0.0                                                        # zera os gradientes do passo anterior
 
     # soma os gradientes de vários micro lotes antes de atualizar os pesos
     for micro_step in range(grad_accum_steps):
@@ -607,9 +607,9 @@ if ddp:
 # max_length = 30            # tamanho máximo de cada frase (em tokens)
 
 # # tokens do início da frase (prefixo)
-# enc = tiktoken.get_encoding('gpt2')                       # tokenizador do GPT-2
-# tokens = enc.encode("Hello, I'm a language model,")       # texto -> lista de 8 números
-# tokens = torch.tensor(tokens, dtype=torch.long)           # (8,)
+# enc = tiktoken.get_encoding('gpt2')                           # tokenizador do GPT-2
+# tokens = enc.encode("Hello, I'm a language model,")           # texto -> lista de 8 números
+# tokens = torch.tensor(tokens, dtype=torch.long)               # (8,)
 # tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # (5, 8): a mesma frase 5 vezes
 # x = tokens.to(device)
 
