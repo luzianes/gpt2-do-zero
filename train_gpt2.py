@@ -386,7 +386,9 @@ model.to(device)
 
 use_hellaswag = False  # a fonte original do HellaSwag (github.com/rowanz/hellaswag) foi bloqueada por DMCA
 
-use_compile = False  # torch.compile atrapalha a HellaSwag e a geração de texto (no código original: TODO fix)
+# use_compile = False  # torch.compile atrapalha a HellaSwag e a geração de texto (no código original: TODO fix)
+
+use_compile = True  # otimizar, já que não está usando o HellaSwag
 if use_compile:
     model = torch.compile(model)
 
@@ -507,7 +509,8 @@ for step in range(max_steps):
 
     # de tempos em tempos, gera texto com o modelo (exceto no passo 0, que é só ruído)
     # if step > 0 and step % 100 == 0:
-    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    # if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    if ((step > 0 and step % 250 == 0) or last_step):
         model.eval()
         num_return_sequences = 4
         max_length = 32
