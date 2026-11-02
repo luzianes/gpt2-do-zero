@@ -224,7 +224,8 @@ train_loader = DataLoaderLite(B=4, T=1024)     # lotes de 4 sequências de 1024 
 torch.set_float32_matmul_precision('high')
 
 # calcula os logits e a loss
-model = GPT(GPTConfig())
+# model = GPT(GPTConfig())
+model = GPT(GPTConfig(vocab_size=50304))   # vocabulário arredondado para um "nice number"
 model.to(device)
 model = torch.compile(model)   # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
 
