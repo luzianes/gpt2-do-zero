@@ -11,6 +11,7 @@ from torch.nn import functional as F
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+import numpy as np
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -204,27 +205,50 @@ class GPT(nn.Module):
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
 
+def load_tokens(filename):
+    npt = np.load(filename)
+    npt = npt.astype(np.int32)   
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
+
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
+    def __init__(self, B, T, process_rank, num_processes, split):
         self.B = B
         self.T = T
 
         self.process_rank = process_rank      # número deste processo (GPU)
         self.num_processes = num_processes    # total de processos (GPUs)
+        assert split in {'train', 'val'}
 
         # ao iniciar, lê os tokens do disco e guarda na memória
-        with open('input.txt', 'r') as f:
-            text = f.read()
-        enc = tiktoken.get_encoding('gpt2')
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        print(f"loaded {len(self.tokens)} tokens")
+        #with open('input.txt', 'r') as f:
+            # text = f.read()
+        # enc = tiktoken.get_encoding('gpt2')
+        # tokens = enc.encode(text)
+        # self.tokens = torch.tensor(tokens)
+        # print(f"loaded {len(self.tokens)} tokens")
         # print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
 
         # estado: posição atual no texto
         # self.current_position = 0
 
         # estado: cada processo começa num ponto diferente do texto
+        # self.current_position = self.B * self.T * self.process_rank
+
+        # lista os arquivos de dados (shards)
+        data_root = "edu_fineweb10B"
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root, s) for s in shards]
+        self.shards = shards
+        assert len(shards) > 0, f"no shards found for split {split}"
+        if master_process:
+            print(f"found {len(shards)} shards for split {split}")
+
+        # estado: começa no primeiro arquivo
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
@@ -234,17 +258,26 @@ class DataLoaderLite:
         y = (buf[1:]).view(B, T)   # respostas esperadas
 
         # avança a posição no texto
-        self.current_position += B * T
+        # self.current_position += B * T
         # se o próximo lote passar do fim do texto, volta ao começo
         # if self.current_position + (B * T + 1) > len(self.tokens):
             # self.current_position = 0
         # return x, y
 
         # avança a posição, pulando os pedaços dos outros processos
-        self.current_position += B * T * self.num_processes
+        # self.current_position += B * T * self.num_processes
         # se o próximo lote passar do fim do texto, volta ao começo
+        # if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            # self.current_position = self.B * self.T * self.process_rank
+        # return x, y
+
+        # avança a posição no arquivo
+        self.current_position += B * T * self.num_processes
+        # se o próximo lote passar do fim do arquivo, vai para o próximo arquivo
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            self.current_position = self.B * self.T * self.process_rank
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            self.current_position = B * T * self.process_rank
         return x, y
 
 # -----------------------------------------------------------------------------
@@ -309,7 +342,8 @@ if master_process:
     print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
 # train_loader = DataLoaderLite(B=B, T=T)
-train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
+# train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 
 # train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 # train_loader = DataLoaderLite(B=16, T=1024)  # lotes de 16 sequências de 1024 tokens
@@ -331,11 +365,18 @@ if ddp:
 raw_model = model.module if ddp else model  # sempre guarda o modelo "puro", sem o DDP
 
 # taxa de aprendizado variável: comneça pequena, sobe (aquecimento) e cai devagar (queda em cosseno)
-# max_lr = 3e-4              # taxa de aprendizado máxima
-max_lr = 6e-4              # taxa de aprendizado máxima
-min_lr = max_lr * 0.1      # taxa mínima: 10% da máxima
-warmup_steps = 10          # passos de aquecimento
-max_steps = 50             # total de passos
+# max_lr = 3e-4             # taxa de aprendizado máxima
+max_lr = 6e-4               # taxa de aprendizado máxima
+min_lr = max_lr * 0.1       # taxa mínima: 10% da máxima
+warmup_steps = 10           # passos de aquecimento
+max_steps = 50              # total de passos
+
+# warmup_steps = 715          # passos de aquecimento
+# max_steps = 19073              # total de passos - ≈ 10 bilhões de tokens ÷ 524.288 por passo
+
+# warmup_steps = 64          # passos de aquecimento - mesma proporção do vídeo (715 de 19073 ≈ 3,75%)
+# max_steps = 1716           # total de passos - ≈ 900 milhões de tokens ÷ 524.288 por passo
+
 def get_lr(it):
     # 1) aquecimento linear: sobe de quase 0 até max_lr nos primeiros warmup_steps
     if it < warmup_steps:
