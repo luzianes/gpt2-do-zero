@@ -213,7 +213,7 @@ if torch.cuda.is_available():
 # train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 # train_loader = DataLoaderLite(B=16, T=1024)  # lotes de 16 sequências de 1024 tokens
 train_loader = DataLoaderLite(B=2, T=1024)     # lotes de 2 sequências de 1024 tokens
-# train_loader = DataLoaderLite(B=4, T=1024)   # lotes de 2 sequências de 1024 tokens
+# train_loader = DataLoaderLite(B=4, T=1024)   # lotes de 4 sequências de 1024 tokens
 
 # usa TF32 nas multiplicações de matrizes (mais rápido, com precisão um pouco menor)
 torch.set_float32_matmul_precision('high')
@@ -221,6 +221,7 @@ torch.set_float32_matmul_precision('high')
 # calcula os logits e a loss
 model = GPT(GPTConfig())
 model.to(device)
+model = torch.compile(model)   # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
 
 # otimiza!
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
