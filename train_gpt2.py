@@ -229,9 +229,29 @@ model = GPT(GPTConfig(vocab_size=50304))   # vocabulário arredondado para um "n
 model.to(device)
 model = torch.compile(model)   # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
 
+# taxa de aprendizado variável: comneça pequena, sobe (aquecimento) e cai devagar (queda em cosseno)
+max_lr = 3e-4              # taxa de aprendizado máxima
+min_lr = max_lr * 0.1      # taxa mínima: 10% da máxima
+warmup_steps = 10          # passos de aquecimento
+max_steps = 50             # total de passos
+def get_lr(it):
+    # 1) aquecimento linear: sobe de quase 0 até max_lr nos primeiros warmup_steps
+    if it < warmup_steps:
+        return max_lr * (it+1) / warmup_steps
+    # 2) depois de max_steps, fica na taxa mínima
+    if it > max_steps:
+        return min_lr
+    # 3) no meio, desce em formato de cosseno até min_lr
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # vai de 1 até 0
+    return min_lr + coeff * (max_lr - min_lr)
+
 # otimiza!
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
-for i in range(50):
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)  # otimizador AdamW, taxa de aprendizado 0,0003
+# for i in range(50):
+for step in range(max_steps):
     t0 = time.time()                                                    # marca o início do passo
     x, y = train_loader.next_batch()                                    # pega o próximo lote do texto
     x, y = x.to(device), y.to(device)                                   # envia o lote para a GPU
@@ -240,12 +260,21 @@ for i in range(50):
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
         logits, loss = model(x, y)                                      # calcula a previsão e o erro (loss)
     loss.backward()                                                     # calcula os gradientes (backpropagation)
+
+    # limita o tamanho total dos gradientes a 1,0 (evita passos grandes demais)
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+    # define a taxa de aprendizado deste passo
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
     optimizer.step()                                                    # atualiza os pesos
     torch.cuda.synchronize()                                            # espera a GPU terminar o trabalho
     t1 = time.time()                                                    # marca o fim do passo
-    dt = (t1 - t0) * 1000                                               # diferença de tempo em milissegundos
+    dt = (t1 - t0)                                             # diferença de tempo em milissegundos
     tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)      # tokens processados por segundo
-    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+    print(f"step {step:4d} | loss: {loss.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 
 import sys; sys.exit(0)             
 
