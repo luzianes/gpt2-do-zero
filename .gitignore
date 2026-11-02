@@ -221,3 +221,7 @@ __marimo__/
 
 # Fineweb
 edu_fineweb10B/
+
+# Evaluation
+log/
+hellaswag/
