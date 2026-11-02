@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import math
 import os
-import sys
+# import sys
 import time
 import inspect
 import tiktoken
@@ -24,8 +24,8 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         # máscara triangular: posição t só enxerga posições <= t
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                     .view(1, 1, config.block_size, config.block_size))
+        # self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+                                     #.view(1, 1, config.block_size, config.block_size))
 
     def forward(self, x):
         B, T, C = x.size()  # lote, nº de tokens, tamanho do vetor
@@ -183,7 +183,7 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
         return model
 
-    def configure_optimizers(self, weight_decay, learning_rate, device):
+    def configure_optimizers(self, weight_decay, learning_rate, device_type):
         # todos os parâmetros que precisam de gradiente
         param_dict = {pn: p for pn, p in self.named_parameters()}
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
@@ -197,12 +197,17 @@ class GPT(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        if master_process:
+            print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+            print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        
         # usa a versão "fused" do AdamW se estiver disponível (mais rápida na GPU)
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and 'cuda' in device
-        print(f"using fused AdamW: {use_fused}")
+        use_fused = fused_available and device_type =='cuda'
+
+        if master_process:
+            print(f"using fused AdamW: {use_fused}")
+        
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
 
@@ -337,6 +342,7 @@ else:
         device = "mps"
     print(f"using device: {device}")
 
+device_type = "cuda" if device.startswith("cuda") else "cpu"    
 
 # -----------------------------------------------------------------------------
 # detecta automaticamente o dispositivo: usa a GPU (cuda) se existir, senão a cpu
@@ -428,7 +434,7 @@ def get_lr(it):
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)  # otimizador AdamW, taxa de aprendizado 0,0003
 # optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
-optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device_type)
 
 # cria a pasta onde ficam os logs e os checkpoints
 log_dir = "log"
@@ -453,7 +459,7 @@ for step in range(max_steps):
             for _ in range(val_loss_steps):
                 x, y = val_loader.next_batch()
                 x, y = x.to(device), y.to(device)
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
@@ -488,7 +494,7 @@ for step in range(max_steps):
             mask = mask.to(device)
             # calcula os logits
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(tokens)
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
@@ -523,7 +529,7 @@ for step in range(max_steps):
         while xgen.size(1) < max_length:
             # passa pelo modelo para obter os logits
             with torch.no_grad():
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
                     logits, loss = model(xgen)  # (B, T, vocab_size)
                 # pega só os logits da última posição
                 logits = logits[:, -1, :]   # (B, vocab_size)
@@ -554,7 +560,7 @@ for step in range(max_steps):
         x, y = x.to(device), y.to(device)                                   # envia o lote para a GPU
     
         # bfloat16: parte das contas usa números de 16 bits (mais rápido e com menos memória)
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)                                      # calcula a previsão e o erro (loss)
         # divide a loss para que a soma dos gradientes vire uma média
         loss = loss / grad_accum_steps
