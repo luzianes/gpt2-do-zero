@@ -384,6 +384,8 @@ model = GPT(GPTConfig(vocab_size=50304))   # vocabulário arredondado para um "n
 model.to(device)
 # model = torch.compile(model)   # compila o modelo: junta operações e reduz idas e voltas à memória da GPU
 
+use_hellaswag = False  # a fonte original do HellaSwag (github.com/rowanz/hellaswag) foi bloqueada por DMCA
+
 use_compile = False  # torch.compile atrapalha a HellaSwag e a geração de texto (no código original: TODO fix)
 if use_compile:
     model = torch.compile(model)
@@ -471,7 +473,7 @@ for step in range(max_steps):
                 torch.save(checkpoint, checkpoint_path)
 
     # de tempos em tempos, avalia a HellaSwag
-    if (step % 250 == 0 or last_step) and (not use_compile):
+    if (step % 250 == 0 or last_step) and (not use_compile) and use_hellaswag:
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
