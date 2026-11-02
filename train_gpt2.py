@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
 import time
+import sys
 import inspect
 
 class CausalSelfAttention(nn.Module):
@@ -238,10 +239,20 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
+total_batch_size = 524288   # 2**19, cerca de 0,5 milhão de tokens por atualização dos pesos
+B = 4                       # micro lote (no vídeo: 16)
+T = 1024                    # tamanho da sequência
+assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
+grad_accum_steps = total_batch_size // (B * T)
+print(f"total desired batch size: {total_batch_size}")
+print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+
+train_loader = DataLoaderLite(B=B, T=T)
+
 # train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 # train_loader = DataLoaderLite(B=16, T=1024)  # lotes de 16 sequências de 1024 tokens
 # train_loader = DataLoaderLite(B=2, T=1024)   # lotes de 2 sequências de 1024 tokens
-train_loader = DataLoaderLite(B=4, T=1024)     # lotes de 4 sequências de 1024 tokens
+# train_loader = DataLoaderLite(B=4, T=1024)   # lotes de 4 sequências de 1024 tokens
 # train_loader = DataLoaderLite(B=8, T=1024)   # lotes de 8 sequências de 1024 tokens
 
 # usa TF32 nas multiplicações de matrizes (mais rápido, com precisão um pouco menor)
@@ -280,13 +291,21 @@ optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, dev
 # for i in range(50):
 for step in range(max_steps):
     t0 = time.time()                                                    # marca o início do passo
-    x, y = train_loader.next_batch()                                    # pega o próximo lote do texto
-    x, y = x.to(device), y.to(device)                                   # envia o lote para a GPU
-    optimizer.zero_grad()                                               # zera os gradientes do passo anterior
-    # bfloat16: parte das contas usa números de 16 bits (mais rápido e com menos memória)
-    with torch.autocast(device_type=device, dtype=torch.bfloat16):
-        logits, loss = model(x, y)                                      # calcula a previsão e o erro (loss)
-    loss.backward()                                                     # calcula os gradientes (backpropagation)
+    optimizer.zero_grad() 
+    loss_accum = 0.0                                              # zera os gradientes do passo anterior
+
+    # soma os gradientes de vários micro lotes antes de atualizar os pesos
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()                                    # pega o próximo lote do texto
+        x, y = x.to(device), y.to(device)                                   # envia o lote para a GPU
+    
+        # bfloat16: parte das contas usa números de 16 bits (mais rápido e com menos memória)
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)                                      # calcula a previsão e o erro (loss)
+        # divide a loss para que a soma dos gradientes vire uma média
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
+        loss.backward()                                                     # calcula os gradientes (backpropagation)
 
     # limita o tamanho total dos gradientes a 1,0 (evita passos grandes demais)
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -300,18 +319,22 @@ for step in range(max_steps):
     torch.cuda.synchronize()                                            # espera a GPU terminar o trabalho
     t1 = time.time()                                                    # marca o fim do passo
     dt = (t1 - t0)                                             # diferença de tempo em milissegundos
-    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)      # tokens processados por segundo
-    print(f"step {step:4d} | loss: {loss.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 
-import sys; sys.exit(0)             
+    # tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)      # tokens processados por segundo
+    
+    tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
+    tokens_per_sec = tokens_processed/ dt
+    
+    print(f"step {step:4d} | loss: {loss_accum.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+
+sys.exit(0)             
 
 # prefix tokens
-model.eval()                        # modo de uso (não de treino)
+model.eval()               # modo de uso (não de treino)
 num_return_sequences = 5   # quantas frases gerar
 max_length = 30            # tamanho máximo de cada frase (em tokens)
 
 # tokens do início da frase (prefixo)
-import tiktoken
 enc = tiktoken.get_encoding('gpt2')                       # tokenizador do GPT-2
 tokens = enc.encode("Hello, I'm a language model,")       # texto -> lista de 8 números
 tokens = torch.tensor(tokens, dtype=torch.long)           # (8,)
