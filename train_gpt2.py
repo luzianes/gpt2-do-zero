@@ -246,6 +246,7 @@ class DataLoaderLite:
         if master_process:
             print(f"found {len(shards)} shards for split {split}")
 
+    def reset(self):
         # estado: começa no primeiro arquivo
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
@@ -327,6 +328,8 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
+enc = tiktoken.get_encoding("gpt2")
+
 total_batch_size = 524288   # 2**19, cerca de 0,5 milhão de tokens por atualização dos pesos
 B = 4                       # micro lote (no vídeo: 16)
 T = 1024                    # tamanho da sequência
@@ -344,6 +347,7 @@ if master_process:
 # train_loader = DataLoaderLite(B=B, T=T)
 # train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
+val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
 
 # train_loader = DataLoaderLite(B=4, T=32)     # lotes de 4 sequências de 32 tokens
 # train_loader = DataLoaderLite(B=16, T=1024)  # lotes de 16 sequências de 1024 tokens
@@ -390,15 +394,72 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # vai de 1 até 0
     return min_lr + coeff * (max_lr - min_lr)
 
-# otimiza!
+# otimização
+
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)  # otimizador AdamW, taxa de aprendizado 0,0003
 # optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)  # otimizador AdamW, taxa de aprendizado 0,0003
 # optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
 # for i in range(50):
 for step in range(max_steps):
     t0 = time.time()                                                    # marca o início do passo
+
+    # de tempos em tempos, avalia a loss de validação
+    if step % 100 == 0:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 20
+            for _ in range(val_loss_steps):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                    logits, loss = model(x, y)
+                loss = loss / val_loss_steps
+                val_loss_accum += loss.detach()
+        if ddp:
+            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+        if master_process:
+            print(f"validation loss: {val_loss_accum.item():.4f}")
+
+    # de tempos em tempos, gera texto com o modelo (exceto no passo 0, que é só ruído)
+    if step > 0 and step % 100 == 0:
+        model.eval()
+        num_return_sequences = 4
+        max_length = 32
+        tokens = enc.encode("Hello, I'm a language model,")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42 + ddp_rank)
+        while xgen.size(1) < max_length:
+            # passa pelo modelo para obter os logits
+            with torch.no_grad():
+                logits, loss = model(xgen)  # (B, T, vocab_size)
+                # pega só os logits da última posição
+                logits = logits[:, -1, :]   # (B, vocab_size)
+                # transforma em probabilidades
+                probs = F.softmax(logits, dim=-1)
+                # amostragem top-k com k = 50
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                # sorteia um token entre os 50 mais prováveis
+                ix = torch.multinomial(topk_probs, 1, generator=sample_rng)  # (B, 1)
+                # pega o índice real do token sorteado
+                xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
+                # acrescenta o token no fim da sequência
+                xgen = torch.cat((xgen, xcol), dim=1)
+        # imprime o texto gerado
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = enc.decode(tokens)
+            print(f"rank {ddp_rank} sample {i}: {decoded}")
+
+    # laço de treino
+    model.train()
     optimizer.zero_grad() 
     loss_accum = 0.0                                              # zera os gradientes do passo anterior
 
@@ -449,44 +510,44 @@ for step in range(max_steps):
 if ddp:
     destroy_process_group()
 
-sys.exit(0)             
+# sys.exit(0)             
 
-# prefix tokens
-model.eval()               # modo de uso (não de treino)
-num_return_sequences = 5   # quantas frases gerar
-max_length = 30            # tamanho máximo de cada frase (em tokens)
+# # prefix tokens
+# model.eval()               # modo de uso (não de treino)
+# num_return_sequences = 5   # quantas frases gerar
+# max_length = 30            # tamanho máximo de cada frase (em tokens)
 
-# tokens do início da frase (prefixo)
-enc = tiktoken.get_encoding('gpt2')                       # tokenizador do GPT-2
-tokens = enc.encode("Hello, I'm a language model,")       # texto -> lista de 8 números
-tokens = torch.tensor(tokens, dtype=torch.long)           # (8,)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # (5, 8): a mesma frase 5 vezes
-x = tokens.to(device)
+# # tokens do início da frase (prefixo)
+# enc = tiktoken.get_encoding('gpt2')                       # tokenizador do GPT-2
+# tokens = enc.encode("Hello, I'm a language model,")       # texto -> lista de 8 números
+# tokens = torch.tensor(tokens, dtype=torch.long)           # (8,)
+# tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)  # (5, 8): a mesma frase 5 vezes
+# x = tokens.to(device)
 
-# geração de texto. neste momento x tem formato (B, T), com B = 5 e T = 8
-# fixa a semente aleatória em 42 (resultados repetíveis)
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-while x.size(1) < max_length:
-    # passa x pelo modelo para obter os logits
-    with torch.no_grad():
-        logits = model(x)  # (B, T, vocab_size)
-        # pega só os logits da última posição
-        logits = logits[:, -1, :]  # (B, vocab_size)
-        # transforma em probabilidades
-        probs = F.softmax(logits, dim=-1)
-        # amostragem top-k com k = 50 (padrão do pipeline da Hugging Face)
-        # topk_probs fica (5, 50), topk_indices fica (5, 50)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-        # sorteia um token entre os 50 mais prováveis
-        ix = torch.multinomial(topk_probs, 1)  # (B, 1)
-        # pega o índice real do token sorteado
-        xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
-        # acrescenta o token no fim da sequência
-        x = torch.cat((x, xcol), dim=1)
+# # geração de texto. neste momento x tem formato (B, T), com B = 5 e T = 8
+# # fixa a semente aleatória em 42 (resultados repetíveis)
+# torch.manual_seed(42)
+# torch.cuda.manual_seed(42)
+# while x.size(1) < max_length:
+#     # passa x pelo modelo para obter os logits
+#     with torch.no_grad():
+#         logits = model(x)  # (B, T, vocab_size)
+#         # pega só os logits da última posição
+#         logits = logits[:, -1, :]  # (B, vocab_size)
+#         # transforma em probabilidades
+#         probs = F.softmax(logits, dim=-1)
+#         # amostragem top-k com k = 50 (padrão do pipeline da Hugging Face)
+#         # topk_probs fica (5, 50), topk_indices fica (5, 50)
+#         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+#         # sorteia um token entre os 50 mais prováveis
+#         ix = torch.multinomial(topk_probs, 1)  # (B, 1)
+#         # pega o índice real do token sorteado
+#         xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
+#         # acrescenta o token no fim da sequência
+#         x = torch.cat((x, xcol), dim=1)
 
-# imprime o texto gerado
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()   # tokens da frase i
-    decoded = enc.decode(tokens)          # números -> texto
-    print(">", decoded)
+# # imprime o texto gerado
+# for i in range(num_return_sequences):
+#     tokens = x[i, :max_length].tolist()   # tokens da frase i
+#     decoded = enc.decode(tokens)          # números -> texto
+#     print(">", decoded)
