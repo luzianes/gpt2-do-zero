@@ -223,5 +223,5 @@ __marimo__/
 edu_fineweb10B/
 
 # Evaluation
-log/
+log/model_*.pt
 hellaswag/
